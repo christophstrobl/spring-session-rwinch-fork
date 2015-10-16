@@ -28,6 +28,7 @@ import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.BoundHashOperations;
+import org.springframework.data.redis.core.RedisHash;
 import org.springframework.data.redis.core.RedisOperations;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.JdkSerializationRedisSerializer;
@@ -598,6 +599,7 @@ public class RedisOperationsSessionRepository implements FindByPrincipalNameSess
 	 * @since 1.0
 	 * @author Rob Winch
 	 */
+	@RedisHash("sessions")
 	final class RedisSession implements ExpiringSession {
 		private final MapSession cached;
 		private Long originalLastAccessTime;
