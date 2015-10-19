@@ -15,8 +15,9 @@
  */
 package org.springframework.session.data.redis;
 
-import java.util.HashMap;
-import java.util.Map;
+import static org.fest.assertions.Assertions.assertThat;
+
+import java.util.Arrays;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -24,17 +25,28 @@ import org.junit.runner.RunWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.serializer.support.DeserializingConverter;
+import org.springframework.core.serializer.support.SerializingConverter;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
 import org.springframework.data.redis.core.RedisHash;
 import org.springframework.data.redis.core.RedisKeyValueAdapter;
 import org.springframework.data.redis.core.RedisKeyValueTemplate;
 import org.springframework.data.redis.core.RedisOperations;
+import org.springframework.data.redis.core.convert.CustomConversions;
 import org.springframework.data.redis.core.convert.IndexResolverImpl;
 import org.springframework.data.redis.core.convert.MappingRedisConverter;
 import org.springframework.data.redis.core.convert.ReferenceResolver;
 import org.springframework.data.redis.core.convert.ReferenceResolverImpl;
 import org.springframework.data.redis.core.mapping.RedisMappingContext;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.session.ExpiringSession;
+import org.springframework.session.MapSession;
+import org.springframework.session.SessionRepository;
 import org.springframework.session.data.redis.config.annotation.web.http.EnableRedisHttpSession;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
@@ -47,8 +59,11 @@ public class RedisKeyValueAdapterTests {
 
 	RedisKeyValueTemplate template;
 
-	@Autowired 
+	@Autowired
 	RedisOperations<Object, Object> redis;
+
+	@Autowired
+	SessionRepository sessions;
 
 	@Before
 	public void setup() {
@@ -63,44 +78,69 @@ public class RedisKeyValueAdapterTests {
 
 		template = new RedisKeyValueTemplate(adapter, mappingContext);
 
-		template.delete(200, RedisSession.class);
 	}
 
 	@Test
-	public void saves() throws InterruptedException {
+	public void saveAsLegacyAndGetAsNew() throws InterruptedException {
+		SecurityContext context = SecurityContextHolder.createEmptyContext();
+		User user = new User("user", "password", AuthorityUtils.createAuthorityList("ROLE_USER"));
+		context.setAuthentication(new UsernamePasswordAuthenticationToken(user,user.getPassword(), user.getAuthorities()));
 
-		RedisSession session = new RedisSession();
-		session.setId(200);
-		session.setAttribute("hi", "there");
+		ExpiringSession sessionToSave = (ExpiringSession) sessions.createSession();
 
-		template.insert(session);
+		sessionToSave.setAttribute("hi", "there");
+		sessionToSave.setAttribute("SECURITY_CONTEXT", context);
+
+
+		sessions.save(sessionToSave);
+
+		RedisSession session = template.findById(sessionToSave.getId(), RedisSession.class);
+
+		assertEquals(sessionToSave, session);
 	}
 
-	@RedisHash("sessions")
-	public static class RedisSession {
+	@Test
+	public void insertAndGetNew() {
+		SecurityContext context = SecurityContextHolder.createEmptyContext();
+		User user = new User("user", "password", AuthorityUtils.createAuthorityList("ROLE_USER"));
+		context.setAuthentication(new UsernamePasswordAuthenticationToken(user,user.getPassword(), user.getAuthorities()));
 
-		@Id Integer id;
+		ExpiringSession sessionToSave = new RedisSession();
 
-		String other = "other";
+		sessionToSave.setAttribute("hi", "there");
+		sessionToSave.setAttribute("SECURITY_CONTEXT", context);
 
-		Map<String, Object> attribute = new HashMap<String, Object>();
+		template.insert(sessionToSave);
 
-		public void setAttribute(String attrName, Object attrValue) {
-			attribute.put(attrName, attrValue);
+		RedisSession actual = template.findById(sessionToSave.getId(), RedisSession.class);
+
+		assertEquals(sessionToSave, actual);
+	}
+
+	private void assertEquals(ExpiringSession expected, ExpiringSession actual) {
+		assertThat(actual).isNotNull();
+
+		assertThat(expected.getId()).isEqualTo(actual.getId());
+		assertThat(expected.getAttributeNames()).isEqualTo(actual.getAttributeNames());
+		assertThat(expected.getCreationTime()).isEqualTo(expected.getCreationTime());
+		assertThat(expected.getLastAccessedTime()).isEqualTo(actual.getLastAccessedTime());
+		assertThat(expected.getMaxInactiveIntervalInSeconds()).isEqualTo(actual.getMaxInactiveIntervalInSeconds());
+		for(String attrName : expected.getAttributeNames()) {
+			assertThat(expected.getAttribute(attrName)).isEqualTo(expected.getAttribute(attrName));
 		}
+	}
 
-		public void setId(int id) {
-			this.id = id;
+	@RedisHash("spring:session:sessions")
+	public static class RedisSession extends MapSession {
+
+		@Id
+		public String getId() {
+			return super.getId();
 		}
-
-		public int getId() {
-			return id;
-		}
-
 	}
 
 	@Configuration
-	@EnableRedisHttpSession(redisNamespace = "RedisOperationsSessionRepositoryITests")
+	@EnableRedisHttpSession
 	static class Config {
 		@Bean
 		public JedisConnectionFactory connectionFactory() throws Exception {
