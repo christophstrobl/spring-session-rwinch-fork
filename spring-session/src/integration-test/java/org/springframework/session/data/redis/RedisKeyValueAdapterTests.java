@@ -28,9 +28,11 @@ import org.springframework.data.annotation.Id;
 import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
 import org.springframework.data.redis.core.RedisHash;
 import org.springframework.data.redis.core.RedisKeyValueAdapter;
+import org.springframework.data.redis.core.RedisKeyValueTemplate;
 import org.springframework.data.redis.core.RedisOperations;
 import org.springframework.data.redis.core.convert.IndexResolverImpl;
 import org.springframework.data.redis.core.convert.MappingRedisConverter;
+import org.springframework.data.redis.core.convert.ReferenceResolver;
 import org.springframework.data.redis.core.convert.ReferenceResolverImpl;
 import org.springframework.data.redis.core.mapping.RedisMappingContext;
 import org.springframework.session.data.redis.config.annotation.web.http.EnableRedisHttpSession;
@@ -43,45 +45,49 @@ import org.springframework.test.context.web.WebAppConfiguration;
 @WebAppConfiguration
 public class RedisKeyValueAdapterTests {
 
-	RedisKeyValueAdapter redisAdapter;
+	RedisKeyValueTemplate template;
 
-	@Autowired
+	@Autowired 
 	RedisOperations<Object, Object> redis;
 
 	@Before
 	public void setup() {
 
-		RedisMappingContext context = new RedisMappingContext();
-		IndexResolverImpl indexResolver = new IndexResolverImpl();
-		ReferenceResolverImpl referenceResolver = new ReferenceResolverImpl(null);
-		MappingRedisConverter converter = new MappingRedisConverter(context, indexResolver, referenceResolver);
-		redisAdapter = new RedisKeyValueAdapter(redis, converter);
-		referenceResolver.setAdapter(redisAdapter);
+		RedisMappingContext mappingContext = new RedisMappingContext();
+		MappingRedisConverter converter = new MappingRedisConverter(mappingContext, new IndexResolverImpl(), null);
+		RedisKeyValueAdapter adapter = new RedisKeyValueAdapter(redis, converter);
+		ReferenceResolver resolver = new ReferenceResolverImpl(adapter);
+		converter.setReferenceResolver(resolver);
+		converter.afterPropertiesSet();
+		mappingContext.afterPropertiesSet();
+
+		template = new RedisKeyValueTemplate(adapter, mappingContext);
+
+		template.delete(200, RedisSession.class);
 	}
 
 	@Test
 	public void saves() throws InterruptedException {
+
 		RedisSession session = new RedisSession();
 		session.setId(200);
-//		session.setAttribute("hi", "there");
+		session.setAttribute("hi", "there");
 
-		redisAdapter.put(session.getId(), session, "keyspace");
-
+		template.insert(session);
 	}
 
 	@RedisHash("sessions")
 	public static class RedisSession {
 
-		@Id
-		Integer id;
+		@Id Integer id;
 
 		String other = "other";
 
-//		Map<String,Object> attribute = new HashMap<String,Object>();
-//
-//		public void setAttribute(String attrName, Object attrValue) {
-//			attribute.put(attrName, attrValue);
-//		}
+		Map<String, Object> attribute = new HashMap<String, Object>();
+
+		public void setAttribute(String attrName, Object attrValue) {
+			attribute.put(attrName, attrValue);
+		}
 
 		public void setId(int id) {
 			this.id = id;
