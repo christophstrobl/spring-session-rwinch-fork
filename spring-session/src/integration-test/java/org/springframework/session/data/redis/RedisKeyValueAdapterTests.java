@@ -20,9 +20,11 @@ import static org.fest.assertions.Assertions.*;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
+import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -30,10 +32,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.convert.ReadingConverter;
 import org.springframework.data.convert.WritingConverter;
+import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisHash;
 import org.springframework.data.redis.core.RedisKeyValueAdapter;
 import org.springframework.data.redis.core.RedisKeyValueTemplate;
@@ -63,6 +68,8 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 import org.springframework.test.context.web.WebAppConfiguration;
 
+import redis.clients.jedis.Jedis;
+
 @RunWith(SpringJUnit4ClassRunner.class)
 @ContextConfiguration
 @WebAppConfiguration
@@ -81,6 +88,9 @@ public class RedisKeyValueAdapterTests {
 
 		IndexConfiguration indexConfig = new IndexConfiguration();
 		indexConfig.addIndexDefinition(new RedisIndexSetting("spring:session:sessions", "creationTime"));
+		indexConfig.addIndexDefinition(new RedisIndexSetting("spring:session:sessions",
+				"sessionAttrs.SECURITY_CONTEXT.authentication.principal.username"));
+		indexConfig.addIndexDefinition(new RedisIndexSetting("spring:session:sessions", "sessionAttrs.hi"));
 
 		RedisMappingContext mappingContext = new RedisMappingContext(new MappingConfiguration(indexConfig,
 				new KeyspaceConfiguration()));
@@ -91,6 +101,15 @@ public class RedisKeyValueAdapterTests {
 		template = new RedisKeyValueTemplate(adapter, mappingContext);
 
 		repo = new RedisRepositoryFactory(template, RedisQueryCreator.class).getRepository(RedisSessionRepository.class);
+	}
+
+	@AfterClass
+	public static void cleanUp() {
+
+		// cleanup after class to give listeners a bit more time to complete.
+		Jedis jedis = new Jedis("127.0.01", 6379);
+		jedis.flushDB();
+		jedis.close();
 	}
 
 	@Test
@@ -113,8 +132,9 @@ public class RedisKeyValueAdapterTests {
 
 	@Test
 	public void insertAndGetNew() {
+
 		SecurityContext context = SecurityContextHolder.createEmptyContext();
-		User user = new User("user", "password", AuthorityUtils.createAuthorityList("ROLE_USER"));
+		final User user = new User("user", "password", AuthorityUtils.createAuthorityList("ROLE_USER"));
 		context.setAuthentication(new UsernamePasswordAuthenticationToken(user, user.getPassword(), user.getAuthorities()));
 
 		RedisSession sessionToSave = new RedisSession();
@@ -122,15 +142,29 @@ public class RedisKeyValueAdapterTests {
 		sessionToSave.setAttribute("hi", "there");
 		sessionToSave.setAttribute("SECURITY_CONTEXT", context);
 
+		// save entity and assign new id
 		repo.save(sessionToSave);
 
+		// fetch it back
 		RedisSession actual = repo.findOne(sessionToSave.getId());
-
 		assertEquals(sessionToSave, actual);
 
+		// use creationTime index for derived query execution
 		actual = repo.findByCreationTime(sessionToSave.getCreationTime());
-
 		assertEquals(sessionToSave, actual);
+
+		// use index on username via RedisCallback to get sessions (query cannot be derived)
+		List<RedisSession> sessionsByUser = template.find(new RedisCallback<Iterable<byte[]>>() {
+
+			public Iterable<byte[]> doInRedis(RedisConnection connection) throws DataAccessException {
+				return connection
+						.sMembers(("spring:session:sessions:sessionAttrs.SECURITY_CONTEXT.authentication.principal.username:" + user
+								.getUsername()).getBytes());
+			}
+		}, RedisSession.class);
+
+		assertThat(sessionsByUser).hasSize(1);
+		assertThat(sessionsByUser.get(0).getId()).isEqualTo(sessionToSave.getId());
 	}
 
 	@Test
